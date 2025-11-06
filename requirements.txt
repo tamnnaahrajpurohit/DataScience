@@ -93,7 +93,7 @@ pyparsing==3.2.5
 python-dateutil==2.9.0.post0
 python-json-logger==4.0.0
 pytz==2025.2
-pywinpty==3.0.2
+pywinpty; platform_system == "Windows"
 PyYAML==6.0.3
 pyzmq==27.1.0
 referencing==0.37.0
@@ -132,3 +132,4 @@ websocket-client==1.9.0
 wheel==0.45.1
 widgetsnbextension==4.0.14
 wordcloud==1.9.4
+
