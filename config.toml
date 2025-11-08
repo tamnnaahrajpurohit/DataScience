@@ -1,0 +1,6 @@
+# .streamlit/config.toml
+[server]
+# Set the watcher type to 'poll'. 
+# 'Poll' is less efficient but forces checks every few seconds, 
+# which is much more reliable than the default 'auto' or 'watchman'.
+fileWatcherType = "poll"
