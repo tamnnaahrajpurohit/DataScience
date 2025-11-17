@@ -5,7 +5,21 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from sqlalchemy import create_engine
 
+def mysql_query(query):
+    # Use SQLAlchemy to avoid pandas warning
+    # Try pymysql first (most common), fallback to mysqlconnector
+    try:
+        import pymysql
+        connection_string = "mysql+pymysql://root:@localhost/ecommer_python_datascience"
+    except ImportError:
+        # Fallback to mysqlconnector if pymysql is not available
+        connection_string = "mysql+mysqlconnector://root:@localhost/ecommer_python_datascience"
+    engine = create_engine(connection_string)
+    df = pd.read_sql(query, engine)
+    engine.dispose()
+    return df
 st.set_page_config(page_title="E-Commerce Analytics Dashboard for Profitability & Operations (Olist) — Insights & Profitability", layout="wide")
 
 def read_csv_optional(path, parse_dates=None):
@@ -35,14 +49,22 @@ def read_csv_optional(path, parse_dates=None):
 @st.cache_data
 def load_data():
     base = "retail_dashboard/data"
-    users = read_csv_optional(os.path.join(base, "users.csv"), parse_dates=["created_at"])
-    warehouses = read_csv_optional(os.path.join(base, "warehouses.csv"))
-    products = read_csv_optional(os.path.join(base, "products.csv"))
-    orders = read_csv_optional(os.path.join(base, "orders.csv"))
-    order_items = read_csv_optional(os.path.join(base, "order_items.csv"))
-    reviews = read_csv_optional(os.path.join(base, "reviews.csv"), parse_dates=["review_date"])
-    returns = read_csv_optional(os.path.join(base, "returns.csv"), parse_dates=["processed_date"])
-    mkt = read_csv_optional(os.path.join(base, "marketing_spend.csv"))
+    users = mysql_query("SELECT * FROM users")
+    warehouses = mysql_query("SELECT * FROM warehouses")
+    products = mysql_query("SELECT * FROM products")
+    orders = mysql_query("SELECT * FROM orders")
+    order_items = mysql_query("SELECT * FROM order_items")
+    reviews = mysql_query("SELECT * FROM reviews")
+    returns = mysql_query("SELECT * FROM returns")
+    mkt = mysql_query("SELECT * FROM marketing_spend")
+    # users = read_csv_optional(os.path.join(base, "users.csv"), parse_dates=["created_at"])
+    # warehouses = read_csv_optional(os.path.join(base, "warehouses.csv"))
+    # products = read_csv_optional(os.path.join(base, "products.csv"))
+    # orders = read_csv_optional(os.path.join(base, "orders.csv"))
+    # order_items = read_csv_optional(os.path.join(base, "order_items.csv"))
+    # reviews = read_csv_optional(os.path.join(base, "reviews.csv"), parse_dates=["review_date"])
+    # returns = read_csv_optional(os.path.join(base, "returns.csv"), parse_dates=["processed_date"])
+    # mkt = read_csv_optional(os.path.join(base, "marketing_spend.csv"))
     return users, warehouses, products, orders, order_items, reviews, returns, mkt
 def beautify_label(label):
     """Convert snake_case or column names to Title Case labels"""
@@ -77,14 +99,20 @@ def build_fact_table(orders, order_items, products):
     if df.empty:
         return df
 
+    # Ensure qty is numeric
     if 'qty' not in df.columns:
         df['qty'] = 1
+    else:
+        df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(1)
 
+    # Ensure unit_price is numeric
     if 'unit_price' not in df.columns:
         if 'price' in df.columns:
             df['unit_price'] = pd.to_numeric(df['price'], errors='coerce')
         else:
             df['unit_price'] = np.nan
+    else:
+        df['unit_price'] = pd.to_numeric(df['unit_price'], errors='coerce')
 
     orders = orders.copy() if isinstance(orders, pd.DataFrame) else pd.DataFrame()
     if 'order_date' not in orders.columns:
@@ -98,6 +126,8 @@ def build_fact_table(orders, order_items, products):
 
     if 'shipping_cost' not in orders.columns:
         if 'freight_value' in df.columns:
+            # Ensure freight_value is numeric before summing
+            df['freight_value'] = pd.to_numeric(df['freight_value'], errors='coerce').fillna(0)
             ship = df.groupby('order_id')['freight_value'].sum().rename('shipping_cost').reset_index()
             orders = orders.merge(ship, on='order_id', how='left')
         else:
@@ -105,14 +135,20 @@ def build_fact_table(orders, order_items, products):
 
     if 'discount_amount' not in orders.columns:
         if 'price' in df.columns:
+            # Ensure price is numeric before summing
+            df['price'] = pd.to_numeric(df['price'], errors='coerce').fillna(0)
             line_sum = df.groupby('order_id')['price'].sum().rename('items_price').reset_index()
             orders = orders.merge(line_sum, on='order_id', how='left')
         else:
             orders['items_price'] = 0.0
 
         if 'payment_value' in orders.columns:
-            gross = orders['items_price'].fillna(0) + orders['shipping_cost'].fillna(0)
-            orders['discount_amount'] = (gross - orders['payment_value'].fillna(gross)).clip(lower=0)
+            # Ensure all values are numeric before calculation
+            orders['items_price'] = pd.to_numeric(orders['items_price'], errors='coerce').fillna(0)
+            orders['shipping_cost'] = pd.to_numeric(orders['shipping_cost'], errors='coerce').fillna(0)
+            orders['payment_value'] = pd.to_numeric(orders['payment_value'], errors='coerce').fillna(0)
+            gross = orders['items_price'] + orders['shipping_cost']
+            orders['discount_amount'] = (gross - orders['payment_value']).clip(lower=0)
         else:
             orders['discount_amount'] = 0.0
 
@@ -130,6 +166,12 @@ def build_fact_table(orders, order_items, products):
     orders_cols = ['order_id','order_date','discount_amount','shipping_cost','channel','warehouse_id']
     orders_cols = [c for c in orders_cols if c in orders.columns]
     df = df.merge(orders[orders_cols], on='order_id', how='left')
+    
+    # Ensure numeric columns from orders merge are numeric
+    if 'discount_amount' in df.columns:
+        df['discount_amount'] = pd.to_numeric(df['discount_amount'], errors='coerce').fillna(0)
+    if 'shipping_cost' in df.columns:
+        df['shipping_cost'] = pd.to_numeric(df['shipping_cost'], errors='coerce').fillna(0)
 
     prod = products.copy() if isinstance(products, pd.DataFrame) else pd.DataFrame()
     if prod.empty:
@@ -137,13 +179,23 @@ def build_fact_table(orders, order_items, products):
 
     if 'unit_price' not in prod.columns:
         if 'price' in df.columns:
+            # Ensure price is numeric before calculating median
+            df['price'] = pd.to_numeric(df['price'], errors='coerce')
             med_price = df.groupby('product_id')['price'].median().rename('unit_price').reset_index()
             prod = prod.merge(med_price, on='product_id', how='left')
         else:
             prod['unit_price'] = np.nan
 
     if 'unit_cost' not in prod.columns:
+        # Ensure unit_price is numeric before calculation
+        prod['unit_price'] = pd.to_numeric(prod['unit_price'], errors='coerce')
         prod['unit_cost'] = prod['unit_price'].fillna(0) * 0.7
+    
+    # Ensure unit_price and unit_cost are numeric in products dataframe
+    if 'unit_price' in prod.columns:
+        prod['unit_price'] = pd.to_numeric(prod['unit_price'], errors='coerce')
+    if 'unit_cost' in prod.columns:
+        prod['unit_cost'] = pd.to_numeric(prod['unit_cost'], errors='coerce')
 
     if 'sku' not in prod.columns:
         prod['sku'] = prod.get('product_id', pd.Series(dtype=str)).astype(str).str[:8]
@@ -159,12 +211,32 @@ def build_fact_table(orders, order_items, products):
     df = df.merge(prod[prod_keep].rename(columns={'unit_price':'unit_price_prod'}), on='product_id', how='left')
 
     df['unit_price'] = df['unit_price'].fillna(df.get('unit_price_prod', np.nan))
+    # Ensure both columns are numeric before multiplication
+    df['qty'] = pd.to_numeric(df['qty'], errors='coerce').fillna(1)
+    df['unit_price'] = pd.to_numeric(df['unit_price'], errors='coerce')
+    
+    # Ensure unit_cost is numeric if it exists
+    if 'unit_cost' in df.columns:
+        df['unit_cost'] = pd.to_numeric(df['unit_cost'], errors='coerce')
+    
     df['line_total'] = df['qty'] * df['unit_price']
     line_sum = df.groupby('order_id')['line_total'].transform('sum').replace(0, np.nan)
-    df['discount_share'] = (df['line_total'] / line_sum) * df['discount_amount'].fillna(0)
+    
+    # Ensure discount_amount and shipping_cost are numeric before calculations
+    if 'discount_amount' in df.columns:
+        df['discount_amount'] = pd.to_numeric(df['discount_amount'], errors='coerce').fillna(0)
+    else:
+        df['discount_amount'] = 0.0
+    
+    if 'shipping_cost' in df.columns:
+        df['shipping_cost'] = pd.to_numeric(df['shipping_cost'], errors='coerce').fillna(0)
+    else:
+        df['shipping_cost'] = 0.0
+    
+    df['discount_share'] = (df['line_total'] / line_sum) * df['discount_amount']
     df['net_line_revenue'] = df['line_total'] - df['discount_share'].fillna(0)
     ship_sum = df.groupby('order_id')['line_total'].transform('sum').replace(0, np.nan)
-    df['ship_share'] = (df['line_total'] / ship_sum) * df['shipping_cost'].fillna(0)
+    df['ship_share'] = (df['line_total'] / ship_sum) * df['shipping_cost']
     df['cogs'] = (df['qty'] * df['unit_cost'].fillna(df['unit_price'] * 0.7)).fillna(0)
     df['gross_profit'] = df['net_line_revenue'] - df['cogs'] - df['ship_share']
     df['margin_pct'] = np.where(df['net_line_revenue']!=0, df['gross_profit']/df['net_line_revenue'], 0)
