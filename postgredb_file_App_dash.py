@@ -14,80 +14,110 @@ st.set_page_config(page_title="Company Dashboard (Olist) — Postgres v3", layou
 # Default (fallback) - keep as a safe local default or change to your local DB
 DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres"
 
-# Resolve DB URL: prefer Streamlit secrets -> environment variable -> default
-def _get_db_url_from_streamlit_secrets():
-    try:
-        # st.secrets behaves like dict on Streamlit Cloud; on other installs it may be a Secrets object
-        if hasattr(st, "secrets"):
-            # Try dict-style .get first
-            try:
-                return st.secrets.get("DATABASE_URL")
-            except Exception:
-                # Fall back to mapping access (Secrets object)
-                try:
-                    return st.secrets["DATABASE_URL"] if "DATABASE_URL" in st.secrets else None
-                except Exception:
-                    return None
-        return None
-    except Exception:
-        return None
+# ---------- Engine creation with IPv4 fallback and diagnostics ----------
+import socket
+from urllib.parse import urlparse, urlunparse
 
-db_from_secrets = _get_db_url_from_streamlit_secrets()
-DB_URL = db_from_secrets or os.getenv("DATABASE_URL") or DEFAULT_DB
-DB_URL = DB_URL.strip() if isinstance(DB_URL, str) else DB_URL
-
-# cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
-try:
-    cache_resource = st.cache_resource
-except AttributeError:
-    cache_resource = st.experimental_singleton
-
-@cache_resource
-def get_engine(url):
+def _make_engine_with_url(url, connect_args=None):
     from sqlalchemy import create_engine
-    connect_args = {}
-
-    # If the URL seems to be a Supabase-hosted DB, ensure SSL requirement for psycopg2
-    # (many managed Postgres hosts require sslmode='require')
     try:
-        if isinstance(url, str) and ("supabase.co" in url or "heroku" in url or "planetscale" in url):
-            # this will instruct psycopg2 to use SSL. If your DB URL already has parameters, you can
-            # also include ?sslmode=require in the URL instead.
-            connect_args = {"sslmode": "require"}
+        if connect_args:
+            return create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+        else:
+            return create_engine(url, future=True, pool_pre_ping=True)
     except Exception:
-        connect_args = {}
+        # let caller handle
+        raise
 
-    # create engine with pool_pre_ping to avoid stale connections on cloud platforms
+def _replace_host_in_url(url, new_host):
+    # replace hostname in a typical postgresql URL while keeping username/password/port/dbname/query
+    parsed = urlparse(url)
+    # netloc may have user:pass@host:port
+    # rebuild netloc using existing username:password and new_host:port
+    # parsed.username and parsed.password may be None
+    userinfo = ""
+    if parsed.username:
+        userinfo += parsed.username
+        if parsed.password:
+            userinfo += ":" + parsed.password
+        userinfo += "@"
+    netloc = f"{userinfo}{new_host}"
+    if parsed.port:
+        netloc += f":{parsed.port}"
+    new_parsed = parsed._replace(netloc=netloc)
+    return urlunparse(new_parsed)
+
+def _resolve_ipv4(hostname):
     try:
-        engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
-    except TypeError:
-        # Some SQLAlchemy + DBAPI combos reject connect_args; try without it
-        engine = create_engine(url, future=True, pool_pre_ping=True)
-    return engine
+        infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
+        ips = []
+        for info in infos:
+            addr = info[4][0]
+            if addr not in ips:
+                ips.append(addr)
+        return ips
+    except Exception:
+        return []
 
-# create engine and test connection (but keep engine cached)
+# Attempt normal engine creation, then fallback to IPv4 numeric address if connection fails
 engine = None
+connect_args = {}
+# If your DB requires SSL but url doesn't include it, you can force it here (we also preserve query in URL)
+if isinstance(DB_URL, str) and ("sslmode" in DB_URL.lower() is False):
+    # if you already appended ?sslmode=require earlier, skip this
+    pass
+
 try:
-    engine = get_engine(DB_URL)
-    # Test a short connection — do not leave a transaction open
+    # First attempt: normal create + quick connect test
     try:
+        engine = _make_engine_with_url(DB_URL, connect_args=connect_args or None)
         with engine.connect() as conn:
-            # run a lightweight validation query depending on DB flavor
             conn.execute(text("SELECT 1"))
-        st.success("Database engine created and connection test passed.")
-    except Exception as e:
-        st.error("Unable to connect to the database using the resolved DB_URL.")
-        st.markdown("**Resolved DB URL:**")
-        st.code(DB_URL)
-        st.markdown("**Connection error (trace):**")
+        st.success("Database engine created and connection test passed (initial attempt).")
+    except Exception as first_err:
+        # Show first attempt error, then try IPv4 fallback
+        st.warning("Initial DB connection failed — attempting IPv4 fallback (if DNS returned IPv6).")
+        st.text("Initial connect error:")
         st.text(traceback.format_exc())
-        # keep engine as-is so later reads can try too, but be explicit that connection failed
+
+        # parse host and try IPv4 addresses
+        parsed = urlparse(DB_URL)
+        host = parsed.hostname
+        if host is None:
+            raise first_err
+
+        ipv4_list = _resolve_ipv4(host)
+        if not ipv4_list:
+            st.error(f"Could not resolve an IPv4 address for hostname: {host}")
+            raise first_err
+
+        last_exc = first_err
+        for ip in ipv4_list:
+            try:
+                new_url = _replace_host_in_url(DB_URL, ip)
+                # When connecting using numeric IP, libpq / psycopg2 may still try to validate TLS CN (hostname).
+                # To preserve hostname for TLS verification, add 'sslrootcert' or use the 'host' query param 'hostaddr'
+                # Another option: append ?sslmode=require if not present. We'll try to preserve query.
+                # Attempt engine creation & connection test with numeric IP:
+                engine = _make_engine_with_url(new_url, connect_args=connect_args or None)
+                with engine.connect() as conn:
+                    conn.execute(text("SELECT 1"))
+                st.success(f"Database connection succeeded using IPv4 address {ip}.")
+                st.markdown("**Used DB URL (with numeric IP):**")
+                st.code(new_url)
+                break
+            except Exception as e:
+                last_exc = e
+                st.text(f"Attempt with IPv4 {ip} failed: {e}")
+        else:
+            # all ipv4 attempts failed
+            st.error("All IPv4 fallback attempts failed. See trace below for last error.")
+            st.text(traceback.format_exc())
+            engine = None
 except Exception:
-    st.error("Failed to create SQLAlchemy engine.")
-    st.markdown("**Resolved DB URL:**")
-    st.code(DB_URL)
-    st.markdown("**Engine creation error (trace):**")
+    st.error("Failed to create a SQLAlchemy engine (final).")
     st.text(traceback.format_exc())
+    engine = None
 
 
 # ---------- helpers ----------
