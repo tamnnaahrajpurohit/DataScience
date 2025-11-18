@@ -1,3 +1,5 @@
+psycopg2==2.9.11
+
 SQLAlchemy==2.0.44
 altair==5.5.0
 anyio==4.11.0
@@ -133,6 +135,7 @@ websocket-client==1.9.0
 wheel==0.45.1
 widgetsnbextension==4.0.14
 wordcloud==1.9.4
+
 
 
 
