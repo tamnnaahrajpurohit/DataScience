@@ -1,4 +1,5 @@
 # app_postgres_olist_v3.py
+import traceback, sys
 import os
 import streamlit as st
 import pandas as pd
