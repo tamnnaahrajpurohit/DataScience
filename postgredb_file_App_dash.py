@@ -18,13 +18,14 @@ try:
     cache_resource = st.cache_resource
 except AttributeError:
     cache_resource = st.experimental_singleton
-
+    
 @cache_resource
 def get_engine(url):
     from sqlalchemy import create_engine
-    return create_engine(url, future=True)
+    # For supabase/postgres you generally need sslmode=require
+    # Passing connect_args is compatible with psycopg2 driver
+    return create_engine(url, future=True, connect_args={"sslmode":"require"})
 
-engine = get_engine(DB_URL)
 
 # ---------- helpers ----------
 @st.cache_data(ttl=600)
