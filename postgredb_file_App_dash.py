@@ -22,12 +22,13 @@ DB_URL = os.getenv("DATABASE_URL", DEFAULT_DB).strip()
 
 # Prefer Streamlit Cloud secrets -> environment variable -> fallback default
 # To set the secret in Streamlit Cloud: go to your app's Settings -> Secrets
-# and add a key named DATABASE_URL with your full SQLAlchemy/PSQL URL.
+
+
 try:
-# st.secrets behaves like a dict in Streamlit Cloud, but may not exist locally
-db_from_secrets = st.secrets.get("DATABASE_URL") if isinstance(st.secrets, dict) else None
+    # st.secrets behaves like a dict on Streamlit Cloud; handle other environments safely
+    db_from_secrets = st.secrets.get("DATABASE_URL") if isinstance(st.secrets, dict) else None
 except Exception:
-db_from_secrets = None
+    db_from_secrets = None
 
 
 DB_URL = db_from_secrets or os.getenv("DATABASE_URL") 
