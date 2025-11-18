@@ -15,11 +15,7 @@ DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:543
 DB_URL = os.getenv("DATABASE_URL", DEFAULT_DB).strip()
 
 # cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
-try:
-    cache_resource = st.cache_resource
-except AttributeError:
-    cache_resource = st.experimental_singleton
-    
+
 
 
 
