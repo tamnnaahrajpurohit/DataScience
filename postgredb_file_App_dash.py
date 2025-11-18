@@ -11,51 +11,83 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="Company Dashboard (Olist) — Postgres v3", layout="wide")
 
 # ---------- DB config ----------
+# Default (fallback) - keep as a safe local default or change to your local DB
 DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres"
-DB_URL = os.getenv("DATABASE_URL", DEFAULT_DB).strip()
+
+# Resolve DB URL: prefer Streamlit secrets -> environment variable -> default
+def _get_db_url_from_streamlit_secrets():
+    try:
+        # st.secrets behaves like dict on Streamlit Cloud; on other installs it may be a Secrets object
+        if hasattr(st, "secrets"):
+            # Try dict-style .get first
+            try:
+                return st.secrets.get("DATABASE_URL")
+            except Exception:
+                # Fall back to mapping access (Secrets object)
+                try:
+                    return st.secrets["DATABASE_URL"] if "DATABASE_URL" in st.secrets else None
+                except Exception:
+                    return None
+        return None
+    except Exception:
+        return None
+
+db_from_secrets = _get_db_url_from_streamlit_secrets()
+DB_URL = db_from_secrets or os.getenv("DATABASE_URL") or DEFAULT_DB
+DB_URL = DB_URL.strip() if isinstance(DB_URL, str) else DB_URL
 
 # cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
-
 try:
     cache_resource = st.cache_resource
 except AttributeError:
     cache_resource = st.experimental_singleton
 
 @cache_resource
-
-
-
-# Prefer Streamlit Cloud secrets -> environment variable -> fallback default
-# To set the secret in Streamlit Cloud: go to your app's Settings -> Secrets
-
-
-try:
-    # st.secrets behaves like a dict on Streamlit Cloud; handle other environments safely
-    db_from_secrets = st.secrets.get("DATABASE_URL") if isinstance(st.secrets, dict) else None
-except Exception:
-    db_from_secrets = None
-
-
-DB_URL = db_from_secrets or os.getenv("DATABASE_URL") 
-DB_URL = DB_URL.strip() if isinstance(DB_URL, str) else DB_URL
-
-
-# cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
-try:
-cache_resource = st.cache_resource
-except AttributeError:
-cache_resource = st.experimental_singleton
-
-
-@cache_resource
 def get_engine(url):
-from sqlalchemy import create_engine
-return create_engine(url, future=True)
+    from sqlalchemy import create_engine
+    connect_args = {}
 
+    # If the URL seems to be a Supabase-hosted DB, ensure SSL requirement for psycopg2
+    # (many managed Postgres hosts require sslmode='require')
+    try:
+        if isinstance(url, str) and ("supabase.co" in url or "heroku" in url or "planetscale" in url):
+            # this will instruct psycopg2 to use SSL. If your DB URL already has parameters, you can
+            # also include ?sslmode=require in the URL instead.
+            connect_args = {"sslmode": "require"}
+    except Exception:
+        connect_args = {}
 
-engine = get_engine(DB_URL)
+    # create engine with pool_pre_ping to avoid stale connections on cloud platforms
+    try:
+        engine = create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+    except TypeError:
+        # Some SQLAlchemy + DBAPI combos reject connect_args; try without it
+        engine = create_engine(url, future=True, pool_pre_ping=True)
+    return engine
 
-
+# create engine and test connection (but keep engine cached)
+engine = None
+try:
+    engine = get_engine(DB_URL)
+    # Test a short connection — do not leave a transaction open
+    try:
+        with engine.connect() as conn:
+            # run a lightweight validation query depending on DB flavor
+            conn.execute(text("SELECT 1"))
+        st.success("Database engine created and connection test passed.")
+    except Exception as e:
+        st.error("Unable to connect to the database using the resolved DB_URL.")
+        st.markdown("**Resolved DB URL:**")
+        st.code(DB_URL)
+        st.markdown("**Connection error (trace):**")
+        st.text(traceback.format_exc())
+        # keep engine as-is so later reads can try too, but be explicit that connection failed
+except Exception:
+    st.error("Failed to create SQLAlchemy engine.")
+    st.markdown("**Resolved DB URL:**")
+    st.code(DB_URL)
+    st.markdown("**Engine creation error (trace):**")
+    st.text(traceback.format_exc())
 
 
 # ---------- helpers ----------
