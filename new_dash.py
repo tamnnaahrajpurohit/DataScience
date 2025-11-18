@@ -11,7 +11,7 @@ st.set_page_config(page_title="Company Dashboard (Olist) — Postgres v3", layou
 
 # ---------- DB config ----------#
 # ---------DEFAULT_DB = "postgresql://postgres:1234@localhost:5432/retail_dashboard" ----#
-DB_URL = os.getenv("DATABASE_URL").strip()
+DB_URL = st.secrets["DATABASE_URL"]
 
 # cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
 try:
