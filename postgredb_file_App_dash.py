@@ -227,12 +227,12 @@ def make_table_figure(df, max_rows=50):
 @st.cache_data(ttl=600)
 def load_all():
     users = read_table_rest("users")
-    warehouses = read_table("warehouses")
-    products = read_table("products")
-    orders = read_table("orders")
-    order_items = read_table("order_items")
-    reviews = read_table("reviews")
-    mkt = read_table("marketing_spend")
+    warehouses = read_table_rest("warehouses")
+    products = read_table_rest("products")
+    orders = read_table_rest("orders")
+    order_items = read_table_rest("order_items")
+    reviews = read_table_rest("reviews")
+    mkt = read_table_rest("marketing_spend")
     return users, warehouses, products, orders, order_items, reviews, mkt
 
 users, warehouses, products, orders, order_items, reviews, mkt = load_all()
