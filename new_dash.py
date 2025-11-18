@@ -155,7 +155,6 @@ def make_table_figure(df, max_rows=50):
     return fig
 
 # ---------- load data ----------
-@cache_data(ttl=600)
 def load_all():
     """
     Loads commonly used tables. Always returns 7 objects (DataFrames),
