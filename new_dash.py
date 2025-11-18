@@ -155,17 +155,29 @@ def make_table_figure(df, max_rows=50):
     return fig
 
 # ---------- load data ----------
-@st.cache_data(ttl=600)
+@cache_data(ttl=600)
 def load_all():
-    users = read_table("users")
-    warehouses = read_table("warehouses")
-    products = read_table("products")
-    orders = read_table("orders")
-    order_items = read_table("order_items")
-    reviews = read_table("reviews")
-    mkt = read_table("marketing_spend")
-    return users, warehouses, products, orders, order_items, reviews, mkt
-
+    """
+    Loads commonly used tables. Always returns 7 objects (DataFrames),
+    fallback to empty DataFrames if table missing.
+    """
+    # list of expected tables
+    names = ["users", "warehouses", "products", "orders", "order_items", "reviews", "marketing_spend"]
+    results = []
+    for n in names:
+        try:
+            df = read_table(n)
+            # ensure it's a DataFrame
+            if not isinstance(df, pd.DataFrame):
+                df = pd.DataFrame()
+        except Exception as e:
+            st.warning(f"Error loading {n}: {e}")
+            df = pd.DataFrame()
+        results.append(df)
+    # ensure length 7
+    while len(results) < 7:
+        results.append(pd.DataFrame())
+    return tuple(results)
 users, warehouses, products, orders, order_items, reviews, mkt = load_all()
 
 # ---------- Build fact table (merge warehouses to get names) ----------
