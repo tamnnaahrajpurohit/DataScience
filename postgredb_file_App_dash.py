@@ -12,7 +12,7 @@ st.set_page_config(page_title="Company Dashboard (Olist) — Postgres v3", layou
 
 # ---------- DB config ----------
 # Default (fallback) - keep as a safe local default or change to your local DB
-DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres"
+DATABASE_URL = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres"
 
 # ---------- Engine creation with IPv4 fallback and diagnostics ----------
 import socket
