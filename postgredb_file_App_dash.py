@@ -19,7 +19,7 @@ try:
 except AttributeError:
     cache_resource = st.experimental_singleton
     
-//
+
 
 
 # ---------- DB engine with SSL (Supabase) + IPv4 fallback ----------
@@ -102,7 +102,7 @@ if engine is None:
 
 
 
-//normal code
+
 # ---------- helpers ----------
 @st.cache_data(ttl=600)
 def read_table(table_name, schema="public"):
