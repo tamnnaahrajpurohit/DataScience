@@ -22,83 +22,70 @@ except AttributeError:
 
 
 
-# ---------- DB engine with SSL (Supabase) + IPv4 fallback ----------
-import urllib.parse, socket, traceback, sys
-
-
 
 @cache_resource
 def get_engine(url):
     from sqlalchemy import create_engine
-    # pool_pre_ping reduces stale connection errors, connect_args ensures TLS for Supabase
+    # ensure SSL for Supabase and keep pool_pre_ping to avoid stale connections
     return create_engine(url, future=True, pool_pre_ping=True, connect_args={"sslmode":"require"})
 
-# Prefer secret/env in deployment: set DATABASE_URL in Streamlit app secrets
-DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres?sslmode=require"
-DB_URL = os.getenv("DATABASE_URL", DEFAULT_DB).strip()
+# Ensure DB_URL is read from env/secrets (set DATABASE_URL in Streamlit Secrets)
+# Example value (do NOT commit): postgresql://user:pass@host:5432/dbname?sslmode=require
+DB_URL = os.getenv("DATABASE_URL", "").strip()
 
 def replace_host_with_ipv4_in_url(url):
-    """
-    Replace hostname in URL with its first IPv4 address (if found).
-    Keeps username/password/path/query intact. Useful when DNS returns IPv6 and runtime can't open IPv6 sockets.
-    """
+    """Return a new URL that uses the first IPv4 for the hostname (if found)."""
     try:
+        if not url:
+            return url
         p = urllib.parse.urlparse(url)
         host = p.hostname
         port = p.port or 5432
-        # get IPv4 addresses only
         infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
         if not infos:
             return url
         ipv4 = infos[0][4][0]
         user = p.username or ""
         pwd = p.password or ""
-        # quote user/pwd if necessary
-        netloc = f"{user}:{pwd}@{ipv4}:{port}" if user else f"{ipv4}:{port}"
+        if user:
+            netloc = f"{urllib.parse.quote(user)}:{urllib.parse.quote(pwd)}@{ipv4}:{port}"
+        else:
+            netloc = f"{ipv4}:{port}"
         rebuilt = urllib.parse.urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
         return rebuilt
     except Exception:
         return url
 
-# Try normal connect; on failure try IPv4 address fallback
+# Create engine (try normal, then IPv4 fallback if needed)
 engine = None
-last_exc = None
-try:
-    engine = get_engine(DB_URL)
-    with engine.connect() as conn:
-        res = conn.execute(text("SELECT version();")).fetchone()
-        st.sidebar.success("DB connected (normal): " + (res[0] if res else "ok"))
-except Exception as e:
-    last_exc = e
-    st.sidebar.warning("Normal connect failed, attempting IPv4 fallback... (see logs)")
-    traceback.print_exc(file=sys.stderr)
-
-    # build IPv4-replaced URL and retry
-    ipv4_url = replace_host_with_ipv4_in_url(DB_URL)
-    if ipv4_url != DB_URL:
-        try:
-            engine = get_engine(ipv4_url)
-            with engine.connect() as conn:
-                res = conn.execute(text("SELECT version();")).fetchone()
-                st.sidebar.success("DB connected (IPv4 fallback): " + (res[0] if res else "ok"))
-                # inform that we used IPv4 (helpful for debugging)
-                st.sidebar.info("Connected using IPv4 address fallback.")
-        except Exception as e2:
-            last_exc = e2
-            st.sidebar.error("IPv4 fallback also failed. See app logs for traceback.")
-            traceback.print_exc(file=sys.stderr)
-    else:
-        st.sidebar.error("No IPv4 address found for host; cannot try IPv4 fallback.")
+if DB_URL:
+    try:
+        engine = get_engine(DB_URL)
+        with engine.connect() as conn:
+            res = conn.execute(text("SELECT version();")).fetchone()
+            st.sidebar.success("DB connected (normal): " + (res[0] if res else "ok"))
+    except Exception as e:
+        st.sidebar.warning("Normal connect failed — attempting IPv4 fallback (see logs).")
         traceback.print_exc(file=sys.stderr)
 
-# If we still don't have engine, stop early with a clear message
-if engine is None:
-    st.sidebar.error("Database engine unavailable. Common causes: network blocked outbound TCP 5432 from Streamlit, IPv6-only DNS resolution, wrong DB_URL/credentials. See logs for details.")
-    # show a short hint to user in the app
-    st.error("Unable to connect to the database. Check Streamlit app secrets (DATABASE_URL), SSL, and that outbound TCP to Supabase (5432) is permitted from this runtime.")
-    # raise the last exception to help Streamlit error logs (optional)
-    # raise last_exc
-
+        ipv4_url = replace_host_with_ipv4_in_url(DB_URL)
+        if ipv4_url != DB_URL:
+            try:
+                engine = get_engine(ipv4_url)
+                with engine.connect() as conn:
+                    res = conn.execute(text("SELECT version();")).fetchone()
+                    st.sidebar.success("DB connected (IPv4 fallback): " + (res[0] if res else "ok"))
+                    st.sidebar.info("Connected using IPv4 address fallback.")
+            except Exception as e2:
+                engine = None
+                st.sidebar.error("IPv4 fallback also failed. See app logs for traceback.")
+                traceback.print_exc(file=sys.stderr)
+        else:
+            engine = None
+            st.sidebar.error("No IPv4 address found for host; cannot try IPv4 fallback. See app logs.")
+            traceback.print_exc(file=sys.stderr)
+else:
+    st.sidebar.info("DATABASE_URL not set — please set DATABASE_URL in Streamlit Secrets (include ?sslmode=require).")
 
 
 
