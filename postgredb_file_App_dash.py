@@ -26,6 +26,17 @@ def get_engine(url):
     # Passing connect_args is compatible with psycopg2 driver
     return create_engine(url, future=True, connect_args={"sslmode":"require"})
 
+# quick connect test
+try:
+    with engine.connect() as conn:
+        res = conn.execute(text("SELECT version();")).fetchone()
+        st.sidebar.success("DB connected: " + (res[0] if res else "ok"))
+except Exception as e:
+    st.sidebar.error("DB connect failed: " + str(e)[:400])
+    # print full traceback to logs too
+    import traceback, sys
+    traceback.print_exc(file=sys.stderr)
+
 
 # ---------- helpers ----------
 @st.cache_data(ttl=600)
