@@ -130,65 +130,98 @@ def read_table(table_name, schema="public", limit=None):
 
 # Place near top of your file (imports)
 
-# New helper: read via Supabase REST (PostgREST)
-def read_table_rest(table_name):
+
+def read_table_rest(table_name, limit=None, timeout=30):
     """
-    Reads an entire table via Supabase REST (PostgREST) and returns a pandas.DataFrame.
-    Requires SUPABASE_URL and SUPABASE_KEY present in st.secrets or env.
+    Read a table from Supabase PostgREST endpoint and return a pandas.DataFrame.
+    - Does NOT use st.cache_data (we keep caching at load_all()).
+    - Defensive: handles non-list JSON (errors) safely and logs minimal diagnostics.
     """
-    supabase_url = None
-    supabase_key = None
-
-    # Prefer Streamlit secrets
-    try:
-        if hasattr(st, "secrets") and st.secrets is not None:
-            supabase_url = st.secrets.get("SUPABASE_URL") or st.secrets.get("supabase_url")
-            supabase_key = st.secrets.get("SUPABASE_KEY") or st.secrets.get("supabase_key")
-    except Exception:
-        supabase_url = None
-        supabase_key = None
-
-    # Fallback to env
-    supabase_url = supabase_url or os.getenv("SUPABASE_URL")
-    supabase_key = supabase_key or os.getenv("SUPABASE_KEY")
-
-    if not supabase_url or not supabase_key:
-        # no supabase credentials available
+    if not SUPABASE_URL or not SUPABASE_KEY:
         return pd.DataFrame()
 
-    # Build REST endpoint: /rest/v1/<table>?select=*
-    # Use urljoin-like safe concatenation (supabase_url doesn't end with slash normally).
-    endpoint = supabase_url.rstrip("/") + f"/rest/v1/{quote_plus(table_name)}?select=*"
+    endpoint = SUPABASE_URL.rstrip("/") + f"/rest/v1/{quote_plus(table_name)}?select=*"
+    if limit and isinstance(limit, int):
+        endpoint += f"&limit={int(limit)}"
+
     headers = {
-        "apikey": supabase_key,
-        "Authorization": f"Bearer {supabase_key}",
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
         "Accept": "application/json",
     }
 
     try:
-        resp = requests.get(endpoint, headers=headers, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        # If result is a list of objects, convert to DataFrame
-        if isinstance(data, list):
-            return pd.DataFrame(data)
-        else:
-            # Unexpected structure, return empty
-            return pd.DataFrame()
+        resp = requests.get(endpoint, headers=headers, timeout=timeout)
     except Exception as e:
-        # fallback: if you still have an engine, try SQLAlchemy read (keeps older behavior)
-        try:
-            if engine is not None:
-                q = text(f'SELECT * FROM public."{table_name}"')
-                return pd.read_sql(q, engine)
-        except Exception:
-            pass
-        # Log minimal info to UI (don't leak secrets)
-        st.write(f"Failed to fetch table '{table_name}' via Supabase REST: {e}")
+        # Network-level error
+        st.warning(f"Supabase REST network error for table '{table_name}': {e}")
+        # Show stack trace in logs (not UI) — safe short message in UI
+        st.text(traceback.format_exc())
         return pd.DataFrame()
 
+    # If non-2xx, show helpful message but do NOT print secrets
+    if not resp.ok:
+        # Try to parse JSON error body safely
+        try:
+            err_json = resp.json()
+            # Supabase often returns {"message":"..."} or {"details": "...", "hint": "..."}
+            # Show a short description to the UI without exposing keys.
+            msg = err_json.get("message") if isinstance(err_json, dict) else None
+            if not msg:
+                # try other common keys
+                msg = err_json.get("error") if isinstance(err_json, dict) else None
+            st.error(f"Supabase REST returned HTTP {resp.status_code} for '{table_name}'. {msg or ''}")
+        except Exception:
+            st.error(f"Supabase REST returned HTTP {resp.status_code} for '{table_name}'.")
+        # Show trace in app logs for debugging
+        st.text(f"Response text (truncated): {resp.text[:500]}")
+        return pd.DataFrame()
 
+    # Try parse as JSON
+    try:
+        data = resp.json()
+    except Exception as e:
+        st.warning(f"Failed to parse JSON from Supabase REST for '{table_name}': {e}")
+        st.text(traceback.format_exc())
+        st.text(f"Response text (truncated): {resp.text[:500]}")
+        return pd.DataFrame()
 
+    # If we got an empty list -> return empty df
+    if isinstance(data, list):
+        if len(data) == 0:
+            return pd.DataFrame()
+        # Normal path: list of dicts -> DataFrame
+        try:
+            return pd.DataFrame(data)
+        except Exception as e:
+            # Defensive: converting list->DataFrame failed (rare)
+            st.warning(f"Could not convert JSON list to DataFrame for '{table_name}': {e}")
+            st.text(traceback.format_exc())
+            return pd.DataFrame()
+    else:
+        # data is not a list — could be dict with error/info or single-object row
+        if isinstance(data, dict):
+            # Common supabase responses on error are dicts with message/hint
+            # If this is a single-record object, wrap into list and convert
+            # But be conservative: if dict has keys like 'message' or 'details', treat as error
+            error_like_keys = {'message', 'error', 'details', 'hint', 'status'}
+            if error_like_keys.intersection(set(data.keys())):
+                st.warning(f"Supabase REST returned an informative object for '{table_name}'. See logs for details.")
+                st.text(str({k: data.get(k) for k in ('message','error','details','hint') if k in data}))
+                return pd.DataFrame()
+            else:
+                # Single row object — convert to single-row DataFrame
+                try:
+                    return pd.DataFrame([data])
+                except Exception as e:
+                    st.warning(f"Could not convert single JSON object to DataFrame for '{table_name}': {e}")
+                    st.text(traceback.format_exc())
+                    return pd.DataFrame()
+        else:
+            # Unexpected type (string/html/number) — just log and return empty
+            st.warning(f"Supabase REST returned unexpected JSON type for '{table_name}' ({type(data)}).")
+            st.text(f"Response preview: {str(data)[:400]}")
+            return pd.DataFrame()
 
 
 def safe_to_datetime(s, **kwargs):
