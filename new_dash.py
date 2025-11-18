@@ -10,8 +10,8 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="Company Dashboard (Olist) — Postgres v3", layout="wide")
 
 # ---------- DB config ----------#
-DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres"
-DB_URL = os.getenv("DATABASE_URL,DEFAULT_DB").strip()
+# ---------DEFAULT_DB = "postgresql://postgres:1234@localhost:5432/retail_dashboard" ----#
+DB_URL = os.getenv("DATABASE_URL").strip()
 
 # cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
 try:
