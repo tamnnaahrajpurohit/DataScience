@@ -63,14 +63,11 @@ def _resolve_ipv4(hostname):
 engine = None
 connect_args = {}
 # If your DB requires SSL but url doesn't include it, you can force it here (we also preserve query in URL)
-if isinstance(DATABASE_URL, str) and ("sslmode" in DB_URL.lower() is False):
-    # if you already appended ?sslmode=require earlier, skip this
-    pass
 
 try:
     # First attempt: normal create + quick connect test
     try:
-        engine = _make_engine_with_url(DB_URL, connect_args=connect_args or None)
+        engine = _make_engine_with_url(DATABASE_URL, connect_args=connect_args or None)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         st.success("Database engine created and connection test passed (initial attempt).")
@@ -81,7 +78,7 @@ try:
         st.text(traceback.format_exc())
 
         # parse host and try IPv4 addresses
-        parsed = urlparse(DB_URL)
+        parsed = urlparse(DATABASE_URL)
         host = parsed.hostname
         if host is None:
             raise first_err
@@ -94,7 +91,7 @@ try:
         last_exc = first_err
         for ip in ipv4_list:
             try:
-                new_url = _replace_host_in_url(DB_URL, ip)
+                new_url = _replace_host_in_url(DATABASE_URL, ip)
                 # When connecting using numeric IP, libpq / psycopg2 may still try to validate TLS CN (hostname).
                 # To preserve hostname for TLS verification, add 'sslrootcert' or use the 'host' query param 'hostaddr'
                 # Another option: append ?sslmode=require if not present. We'll try to preserve query.
