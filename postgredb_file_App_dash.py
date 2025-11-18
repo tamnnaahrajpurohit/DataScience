@@ -24,69 +24,34 @@ except AttributeError:
 
 
 
+# Prefer Streamlit Cloud secrets -> environment variable -> fallback default
+# To set the secret in Streamlit Cloud: go to your app's Settings -> Secrets
+# and add a key named DATABASE_URL with your full SQLAlchemy/PSQL URL.
+try:
+# st.secrets behaves like a dict in Streamlit Cloud, but may not exist locally
+db_from_secrets = st.secrets.get("DATABASE_URL") if isinstance(st.secrets, dict) else None
+except Exception:
+db_from_secrets = None
+
+
+DB_URL = db_from_secrets or os.getenv("DATABASE_URL") 
+DB_URL = DB_URL.strip() if isinstance(DB_URL, str) else DB_URL
+
+
+# cache_resource preferred for non-picklable objects (SQLAlchemy Engine)
+try:
+cache_resource = st.cache_resource
+except AttributeError:
+cache_resource = st.experimental_singleton
+
+
 @cache_resource
 def get_engine(url):
-    from sqlalchemy import create_engine
-    # ensure SSL for Supabase and keep pool_pre_ping to avoid stale connections
-    return create_engine(url, future=True, pool_pre_ping=True, connect_args={"sslmode":"require"})
+from sqlalchemy import create_engine
+return create_engine(url, future=True)
 
-# Ensure DB_URL is read from env/secrets (set DATABASE_URL in Streamlit Secrets)
-# Example value (do NOT commit): postgresql://user:pass@host:5432/dbname?sslmode=require
-DB_URL = os.getenv("DATABASE_URL", "").strip()
 
-def replace_host_with_ipv4_in_url(url):
-    """Return a new URL that uses the first IPv4 for the hostname (if found)."""
-    try:
-        if not url:
-            return url
-        p = urllib.parse.urlparse(url)
-        host = p.hostname
-        port = p.port or 5432
-        infos = socket.getaddrinfo(host, port, family=socket.AF_INET, type=socket.SOCK_STREAM)
-        if not infos:
-            return url
-        ipv4 = infos[0][4][0]
-        user = p.username or ""
-        pwd = p.password or ""
-        if user:
-            netloc = f"{urllib.parse.quote(user)}:{urllib.parse.quote(pwd)}@{ipv4}:{port}"
-        else:
-            netloc = f"{ipv4}:{port}"
-        rebuilt = urllib.parse.urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment))
-        return rebuilt
-    except Exception:
-        return url
-
-# Create engine (try normal, then IPv4 fallback if needed)
-engine = None
-if DB_URL:
-    try:
-        engine = get_engine(DB_URL)
-        with engine.connect() as conn:
-            res = conn.execute(text("SELECT version();")).fetchone()
-            st.sidebar.success("DB connected (normal): " + (res[0] if res else "ok"))
-    except Exception as e:
-        st.sidebar.warning("Normal connect failed — attempting IPv4 fallback (see logs).")
-        traceback.print_exc(file=sys.stderr)
-
-        ipv4_url = replace_host_with_ipv4_in_url(DB_URL)
-        if ipv4_url != DB_URL:
-            try:
-                engine = get_engine(ipv4_url)
-                with engine.connect() as conn:
-                    res = conn.execute(text("SELECT version();")).fetchone()
-                    st.sidebar.success("DB connected (IPv4 fallback): " + (res[0] if res else "ok"))
-                    st.sidebar.info("Connected using IPv4 address fallback.")
-            except Exception as e2:
-                engine = None
-                st.sidebar.error("IPv4 fallback also failed. See app logs for traceback.")
-                traceback.print_exc(file=sys.stderr)
-        else:
-            engine = None
-            st.sidebar.error("No IPv4 address found for host; cannot try IPv4 fallback. See app logs.")
-            traceback.print_exc(file=sys.stderr)
-else:
-    st.sidebar.info("DATABASE_URL not set — please set DATABASE_URL in Streamlit Secrets (include ?sslmode=require).")
+engine = get_engine(DB_URL)
 
 
 
