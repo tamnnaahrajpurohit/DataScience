@@ -28,15 +28,102 @@ engine = get_engine(DB_URL)
 
 # ---------- helpers ----------
 @st.cache_data(ttl=600)
-def read_table(table_name, schema="public"):
+
+# Place near top of your file (imports)
+
+
+def read_table_rest(table_name, limit=None, timeout=30):
+    """
+    Read a table from Supabase PostgREST endpoint and return a pandas.DataFrame.
+    - Does NOT use st.cache_data (we keep caching at load_all()).
+    - Defensive: handles non-list JSON (errors) safely and logs minimal diagnostics.
+    """
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return pd.DataFrame()
+
+    endpoint = SUPABASE_URL.rstrip("/") + f"/rest/v1/{quote_plus(table_name)}?select=*"
+    if limit and isinstance(limit, int):
+        endpoint += f"&limit={int(limit)}"
+
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Accept": "application/json",
+    }
+
     try:
-        q = text(f'SELECT * FROM "{schema}"."{table_name}"')
-        return pd.read_sql(q, engine)
-    except Exception:
+        resp = requests.get(endpoint, headers=headers, timeout=timeout)
+    except Exception as e:
+        # Network-level error
+        st.warning(f"Supabase REST network error for table '{table_name}': {e}")
+        # Show stack trace in logs (not UI) — safe short message in UI
+        st.text(traceback.format_exc())
+        return pd.DataFrame()
+
+    # If non-2xx, show helpful message but do NOT print secrets
+    if not resp.ok:
+        # Try to parse JSON error body safely
         try:
-            return pd.read_sql(f"select * from {table_name}", engine)
+            err_json = resp.json()
+            # Supabase often returns {"message":"..."} or {"details": "...", "hint": "..."}
+            # Show a short description to the UI without exposing keys.
+            msg = err_json.get("message") if isinstance(err_json, dict) else None
+            if not msg:
+                # try other common keys
+                msg = err_json.get("error") if isinstance(err_json, dict) else None
+            st.error(f"Supabase REST returned HTTP {resp.status_code} for '{table_name}'. {msg or ''}")
         except Exception:
+            st.error(f"Supabase REST returned HTTP {resp.status_code} for '{table_name}'.")
+        # Show trace in app logs for debugging
+        st.text(f"Response text (truncated): {resp.text[:500]}")
+        return pd.DataFrame()
+
+    # Try parse as JSON
+    try:
+        data = resp.json()
+    except Exception as e:
+        st.warning(f"Failed to parse JSON from Supabase REST for '{table_name}': {e}")
+        st.text(traceback.format_exc())
+        st.text(f"Response text (truncated): {resp.text[:500]}")
+        return pd.DataFrame()
+
+    # If we got an empty list -> return empty df
+    if isinstance(data, list):
+        if len(data) == 0:
             return pd.DataFrame()
+        # Normal path: list of dicts -> DataFrame
+        try:
+            return pd.DataFrame(data)
+        except Exception as e:
+            # Defensive: converting list->DataFrame failed (rare)
+            st.warning(f"Could not convert JSON list to DataFrame for '{table_name}': {e}")
+            st.text(traceback.format_exc())
+            return pd.DataFrame()
+    else:
+        # data is not a list — could be dict with error/info or single-object row
+        if isinstance(data, dict):
+            # Common supabase responses on error are dicts with message/hint
+            # If this is a single-record object, wrap into list and convert
+            # But be conservative: if dict has keys like 'message' or 'details', treat as error
+            error_like_keys = {'message', 'error', 'details', 'hint', 'status'}
+            if error_like_keys.intersection(set(data.keys())):
+                st.warning(f"Supabase REST returned an informative object for '{table_name}'. See logs for details.")
+                st.text(str({k: data.get(k) for k in ('message','error','details','hint') if k in data}))
+                return pd.DataFrame()
+            else:
+                # Single row object — convert to single-row DataFrame
+                try:
+                    return pd.DataFrame([data])
+                except Exception as e:
+                    st.warning(f"Could not convert single JSON object to DataFrame for '{table_name}': {e}")
+                    st.text(traceback.format_exc())
+                    return pd.DataFrame()
+        else:
+            # Unexpected type (string/html/number) — just log and return empty
+            st.warning(f"Supabase REST returned unexpected JSON type for '{table_name}' ({type(data)}).")
+            st.text(f"Response preview: {str(data)[:400]}")
+            return pd.DataFrame()
+
 
 def safe_to_datetime(s, **kwargs):
     try:
@@ -178,11 +265,19 @@ date_range = st.sidebar.date_input("Order Date Range", value=(min_date, max_date
 channels = ["All"] + sorted(orders['channel'].dropna().unique().tolist()) if isinstance(orders, pd.DataFrame) and 'channel' in orders.columns else ["All"]
 channel_sel = st.sidebar.selectbox("Channel", channels, index=0)
 
+# ---------- Sidebar: Warehouse name list (safe) ----------
 if isinstance(warehouses, pd.DataFrame) and 'name' in warehouses.columns:
+    # prefer human-friendly warehouse names when available
     wh_names = ["All"] + sorted(warehouses['name'].dropna().astype(str).unique().tolist())
 else:
-    wh_names = ["All"] + sorted(orders['warehouse_id'].dropna().astype(str).unique().tolist()) if isinstance(orders, pd.DataFrame) else ["All"]
+    # only add warehouse ids from orders if the column exists
+    if isinstance(orders, pd.DataFrame) and 'warehouse_id' in orders.columns:
+        wh_names = ["All"] + sorted(orders['warehouse_id'].dropna().astype(str).unique().tolist())
+    else:
+        # neither warehouses.name nor orders.warehouse_id exists — use just "All"
+        wh_names = ["All"]
 warehouse_name_sel = st.sidebar.selectbox("Warehouse (Seller name)", wh_names, index=0)
+
 
 wh_cities = ["All"] + sorted(warehouses['city'].dropna().astype(str).unique().tolist()) if isinstance(warehouses, pd.DataFrame) and 'city' in warehouses.columns else ["All"]
 warehouse_city_sel = st.sidebar.selectbox("Warehouse City", wh_cities, index=0)
