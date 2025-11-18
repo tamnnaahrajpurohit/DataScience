@@ -19,23 +19,36 @@ try:
 except AttributeError:
     cache_resource = st.experimental_singleton
     
+# ---------- DB engine with SSL (Supabase) ----------
+try:
+    cache_resource = st.cache_resource
+except Exception:
+    cache_resource = st.experimental_singleton
+
 @cache_resource
 def get_engine(url):
     from sqlalchemy import create_engine
-    # For supabase/postgres you generally need sslmode=require
-    # Passing connect_args is compatible with psycopg2 driver
+    # ensure SSL for Supabase
     return create_engine(url, future=True, connect_args={"sslmode":"require"})
 
-# quick connect test
+# Ensure DB_URL is set (use secret/env in production)
+DEFAULT_DB = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5432/postgres?sslmode=require"
+DB_URL = os.getenv("DATABASE_URL", DEFAULT_DB).strip()
+
+# create engine (this must run before any connect test)
+engine = get_engine(DB_URL)
+
+# ---------- Quick connect test (place AFTER engine is defined) ----------
+import traceback, sys
 try:
     with engine.connect() as conn:
         res = conn.execute(text("SELECT version();")).fetchone()
         st.sidebar.success("DB connected: " + (res[0] if res else "ok"))
 except Exception as e:
     st.sidebar.error("DB connect failed: " + str(e)[:400])
-    # print full traceback to logs too
-    import traceback, sys
+    # print full traceback to logs for detailed diagnosis
     traceback.print_exc(file=sys.stderr)
+
 
 
 # ---------- helpers ----------
