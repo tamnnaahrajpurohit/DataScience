@@ -178,11 +178,19 @@ date_range = st.sidebar.date_input("Order Date Range", value=(min_date, max_date
 channels = ["All"] + sorted(orders['channel'].dropna().unique().tolist()) if isinstance(orders, pd.DataFrame) and 'channel' in orders.columns else ["All"]
 channel_sel = st.sidebar.selectbox("Channel", channels, index=0)
 
+# ---------- Sidebar: Warehouse name list (safe) ----------
 if isinstance(warehouses, pd.DataFrame) and 'name' in warehouses.columns:
+    # prefer human-friendly warehouse names when available
     wh_names = ["All"] + sorted(warehouses['name'].dropna().astype(str).unique().tolist())
 else:
-    wh_names = ["All"] + sorted(orders['warehouse_id'].dropna().astype(str).unique().tolist()) if isinstance(orders, pd.DataFrame) else ["All"]
+    # only add warehouse ids from orders if the column exists
+    if isinstance(orders, pd.DataFrame) and 'warehouse_id' in orders.columns:
+        wh_names = ["All"] + sorted(orders['warehouse_id'].dropna().astype(str).unique().tolist())
+    else:
+        # neither warehouses.name nor orders.warehouse_id exists — use just "All"
+        wh_names = ["All"]
 warehouse_name_sel = st.sidebar.selectbox("Warehouse (Seller name)", wh_names, index=0)
+
 
 wh_cities = ["All"] + sorted(warehouses['city'].dropna().astype(str).unique().tolist()) if isinstance(warehouses, pd.DataFrame) and 'city' in warehouses.columns else ["All"]
 warehouse_city_sel = st.sidebar.selectbox("Warehouse City", wh_cities, index=0)
