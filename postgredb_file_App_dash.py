@@ -63,7 +63,7 @@ def _resolve_ipv4(hostname):
 engine = None
 connect_args = {}
 # If your DB requires SSL but url doesn't include it, you can force it here (we also preserve query in URL)
-if isinstance(DB_URL, str) and ("sslmode" in DB_URL.lower() is False):
+if isinstance(DATABASE_URL, str) and ("sslmode" in DB_URL.lower() is False):
     # if you already appended ?sslmode=require earlier, skip this
     pass
 
