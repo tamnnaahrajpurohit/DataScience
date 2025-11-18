@@ -119,6 +119,71 @@ except Exception:
 
 # ---------- helpers ----------
 @st.cache_data(ttl=600)
+
+# Place near top of your file (imports)
+import requests
+from urllib.parse import quote_plus
+
+# New helper: read via Supabase REST (PostgREST)
+def read_table_rest(table_name):
+    """
+    Reads an entire table via Supabase REST (PostgREST) and returns a pandas.DataFrame.
+    Requires SUPABASE_URL and SUPABASE_KEY present in st.secrets or env.
+    """
+    supabase_url = None
+    supabase_key = None
+
+    # Prefer Streamlit secrets
+    try:
+        if hasattr(st, "secrets") and st.secrets is not None:
+            supabase_url = st.secrets.get("SUPABASE_URL") or st.secrets.get("supabase_url")
+            supabase_key = st.secrets.get("SUPABASE_KEY") or st.secrets.get("supabase_key")
+    except Exception:
+        supabase_url = None
+        supabase_key = None
+
+    # Fallback to env
+    supabase_url = supabase_url or os.getenv("SUPABASE_URL")
+    supabase_key = supabase_key or os.getenv("SUPABASE_KEY")
+
+    if not supabase_url or not supabase_key:
+        # no supabase credentials available
+        return pd.DataFrame()
+
+    # Build REST endpoint: /rest/v1/<table>?select=*
+    # Use urljoin-like safe concatenation (supabase_url doesn't end with slash normally).
+    endpoint = supabase_url.rstrip("/") + f"/rest/v1/{quote_plus(table_name)}?select=*"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Accept": "application/json",
+    }
+
+    try:
+        resp = requests.get(endpoint, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        # If result is a list of objects, convert to DataFrame
+        if isinstance(data, list):
+            return pd.DataFrame(data)
+        else:
+            # Unexpected structure, return empty
+            return pd.DataFrame()
+    except Exception as e:
+        # fallback: if you still have an engine, try SQLAlchemy read (keeps older behavior)
+        try:
+            if engine is not None:
+                q = text(f'SELECT * FROM public."{table_name}"')
+                return pd.read_sql(q, engine)
+        except Exception:
+            pass
+        # Log minimal info to UI (don't leak secrets)
+        st.write(f"Failed to fetch table '{table_name}' via Supabase REST: {e}")
+        return pd.DataFrame()
+
+
+
+
 def read_table(table_name, schema="public"):
     try:
         q = text(f'SELECT * FROM "{schema}"."{table_name}"')
@@ -161,7 +226,7 @@ def make_table_figure(df, max_rows=50):
 # ---------- load data ----------
 @st.cache_data(ttl=600)
 def load_all():
-    users = read_table("users")
+    users = read_table_rest("users")
     warehouses = read_table("warehouses")
     products = read_table("products")
     orders = read_table("orders")
