@@ -7,6 +7,8 @@ import numpy as np
 from sqlalchemy import text
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
+from urllib.parse import quote_plus
 
 st.set_page_config(page_title="Company Dashboard (Olist) — Postgres v3", layout="wide")
 
@@ -121,8 +123,6 @@ except Exception:
 @st.cache_data(ttl=600)
 
 # Place near top of your file (imports)
-import requests
-from urllib.parse import quote_plus
 
 # New helper: read via Supabase REST (PostgREST)
 def read_table_rest(table_name):
