@@ -97,7 +97,7 @@ if not SUPABASE_URL or not SUPABASE_KEY:
         engine = None
 
 # --- Unified read_table that prefers REST, then falls back to SQLAlchemy if available ---
-def read_table(table_name, schema="public", limit=None):
+def read_table(table_name, schema="public", limit=None,page_size=50000):
     """
     Preferred order:
     1) Supabase REST (HTTPS) if credentials present
