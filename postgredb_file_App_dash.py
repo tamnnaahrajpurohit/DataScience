@@ -19,105 +19,111 @@ DATABASE_URL = "postgresql://postgres:1234@db.hzyzqmyabfqagcxdwjti.supabase.co:5
 # ---------- Engine creation with IPv4 fallback and diagnostics ----------
 import socket
 from urllib.parse import urlparse, urlunparse
-
-def _make_engine_with_url(url, connect_args=None):
-    from sqlalchemy import create_engine
+# Prefer Streamlit secrets -> environment variables
+def _get_supabase_creds():
+    supabase_url = None
+    supabase_key = None
     try:
-        if connect_args:
-            return create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+        if hasattr(st, "secrets") and st.secrets:
+            supabase_url = st.secrets.get("SUPABASE_URL") or st.secrets.get("supabase_url")
+            supabase_key = st.secrets.get("SUPABASE_KEY") or st.secrets.get("supabase_key")
+    except Exception:
+        supabase_url = None
+        supabase_key = None
+    supabase_url = supabase_url or os.getenv("SUPABASE_URL")
+    supabase_key = supabase_key or os.getenv("SUPABASE_KEY")
+    return supabase_url, supabase_key
+
+# If Supabase REST creds exist, we'll prefer REST (HTTPS) — works on Streamlit Cloud.
+SUPABASE_URL, SUPABASE_KEY = _get_supabase_creds()
+# Optional direct DATABASE_URL for local development or hosts that allow outbound Postgres
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:1234@localhost:5432/retail_dashboard")
+
+# Diagnostic: show which approach we'll try (no secrets printed)
+if SUPABASE_URL and SUPABASE_KEY:
+    st.info("Using Supabase REST (HTTPS) to fetch tables (preferred for hosted apps).")
+else:
+    st.info("Supabase REST credentials not found. Will attempt direct PostgreSQL via DATABASE_URL (may fail on hosted runtimes).")
+
+# --- REST reader for Supabase PostgREST ---
+def read_table_rest(table_name, limit=None):
+    """Return DataFrame from Supabase REST endpoint, or empty DataFrame on failure."""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return pd.DataFrame()
+
+    endpoint = SUPABASE_URL.rstrip("/") + f"/rest/v1/{quote_plus(table_name)}?select=*"
+    if limit and isinstance(limit, int):
+        endpoint += f"&limit={limit}"
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Accept": "application/json",
+    }
+    try:
+        resp = requests.get(endpoint, headers=headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            if len(data) == 0:
+                return pd.DataFrame()
+            return pd.DataFrame(data)
         else:
-            return create_engine(url, future=True, pool_pre_ping=True)
-    except Exception:
-        # let caller handle
-        raise
+            # unexpected structure
+            st.warning(f"Supabase REST returned unexpected structure for '{table_name}'.")
+            return pd.DataFrame()
+    except Exception as e:
+        st.warning(f"Supabase REST request failed for '{table_name}': {e}")
+        return pd.DataFrame()
 
-def _replace_host_in_url(url, new_host):
-    # replace hostname in a typical postgresql URL while keeping username/password/port/dbname/query
-    parsed = urlparse(url)
-    # netloc may have user:pass@host:port
-    # rebuild netloc using existing username:password and new_host:port
-    # parsed.username and parsed.password may be None
-    userinfo = ""
-    if parsed.username:
-        userinfo += parsed.username
-        if parsed.password:
-            userinfo += ":" + parsed.password
-        userinfo += "@"
-    netloc = f"{userinfo}{new_host}"
-    if parsed.port:
-        netloc += f":{parsed.port}"
-    new_parsed = parsed._replace(netloc=netloc)
-    return urlunparse(new_parsed)
-
-def _resolve_ipv4(hostname):
-    try:
-        infos = socket.getaddrinfo(hostname, None, family=socket.AF_INET)
-        ips = []
-        for info in infos:
-            addr = info[4][0]
-            if addr not in ips:
-                ips.append(addr)
-        return ips
-    except Exception:
-        return []
-
-# Attempt normal engine creation, then fallback to IPv4 numeric address if connection fails
+# --- SQLAlchemy engine creation (only used if REST creds missing or REST fallback fails) ---
 engine = None
-connect_args = {}
-# If your DB requires SSL but url doesn't include it, you can force it here (we also preserve query in URL)
-
-try:
-    # First attempt: normal create + quick connect test
+if not SUPABASE_URL or not SUPABASE_KEY:
+    # Only try direct DB when Supabase REST not available (reduces failures on hosted runtimes)
     try:
-        engine = _make_engine_with_url(DATABASE_URL, connect_args=connect_args or None)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        st.success("Database engine created and connection test passed (initial attempt).")
-    except Exception as first_err:
-        # Show first attempt error, then try IPv4 fallback
-        st.warning("Initial DB connection failed — attempting IPv4 fallback (if DNS returned IPv6).")
-        st.text("Initial connect error:")
-        st.text(traceback.format_exc())
-
-        # parse host and try IPv4 addresses
-        parsed = urlparse(DATABASE_URL)
-        host = parsed.hostname
-        if host is None:
-            raise first_err
-
-        ipv4_list = _resolve_ipv4(host)
-        if not ipv4_list:
-            st.error(f"Could not resolve an IPv4 address for hostname: {host}")
-            raise first_err
-
-        last_exc = first_err
-        for ip in ipv4_list:
-            try:
-                new_url = _replace_host_in_url(DATABASE_URL, ip)
-                # When connecting using numeric IP, libpq / psycopg2 may still try to validate TLS CN (hostname).
-                # To preserve hostname for TLS verification, add 'sslrootcert' or use the 'host' query param 'hostaddr'
-                # Another option: append ?sslmode=require if not present. We'll try to preserve query.
-                # Attempt engine creation & connection test with numeric IP:
-                engine = _make_engine_with_url(new_url, connect_args=connect_args or None)
-                with engine.connect() as conn:
-                    conn.execute(text("SELECT 1"))
-                st.success(f"Database connection succeeded using IPv4 address {ip}.")
-                st.markdown("**Used DB URL (with numeric IP):**")
-                st.code(new_url)
-                break
-            except Exception as e:
-                last_exc = e
-                st.text(f"Attempt with IPv4 {ip} failed: {e}")
-        else:
-            # all ipv4 attempts failed
-            st.error("All IPv4 fallback attempts failed. See trace below for last error.")
-            st.text(traceback.format_exc())
+        from sqlalchemy import create_engine
+        engine = create_engine(DATABASE_URL, future=True, pool_pre_ping=True)
+        # quick test
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            st.success("Direct database connection successful (using DATABASE_URL).")
+        except Exception as e:
+            st.warning("Direct DATABASE_URL exists but connection test failed.")
+            st.text(str(e))
             engine = None
-except Exception:
-    st.error("Failed to create a SQLAlchemy engine (final).")
-    st.text(traceback.format_exc())
-    engine = None
+    except Exception as e:
+        st.error("Failed to create SQLAlchemy engine.")
+        st.text(str(e))
+        engine = None
 
+# --- Unified read_table that prefers REST, then falls back to SQLAlchemy if available ---
+def read_table(table_name, schema="public", limit=None):
+    """
+    Preferred order:
+    1) Supabase REST (HTTPS) if credentials present
+    2) SQLAlchemy engine if created
+    3) Return empty DataFrame
+    """
+    # 1) REST
+    if SUPABASE_URL and SUPABASE_KEY:
+        df = read_table_rest(table_name, limit=limit)
+        if not df.empty:
+            return df
+        # if REST returns empty, we still try SQLAlchemy fallback below (useful for private tables)
+    # 2) SQLAlchemy fallback
+    if engine is not None:
+        try:
+            q = text(f'SELECT * FROM "{schema}"."{table_name}"')
+            return pd.read_sql(q, engine)
+        except Exception:
+            try:
+                return pd.read_sql(f"select * from {table_name}", engine)
+            except Exception:
+                st.warning(f"SQLAlchemy fallback failed for '{table_name}'.")
+                return pd.DataFrame()
+    # 3) nothing available
+    st.info(f"No data loaded for '{table_name}' (no REST creds and no DB engine).")
+    return pd.DataFrame()
 
 # ---------- helpers ----------
 @st.cache_data(ttl=600)
@@ -184,15 +190,6 @@ def read_table_rest(table_name):
 
 
 
-def read_table(table_name, schema="public"):
-    try:
-        q = text(f'SELECT * FROM "{schema}"."{table_name}"')
-        return pd.read_sql(q, engine)
-    except Exception:
-        try:
-            return pd.read_sql(f"select * from {table_name}", engine)
-        except Exception:
-            return pd.DataFrame()
 
 def safe_to_datetime(s, **kwargs):
     try:
@@ -226,13 +223,13 @@ def make_table_figure(df, max_rows=50):
 # ---------- load data ----------
 @st.cache_data(ttl=600)
 def load_all():
-    users = read_table_rest("users")
-    warehouses = read_table_rest("warehouses")
-    products = read_table_rest("products")
-    orders = read_table_rest("orders")
-    order_items = read_table_rest("order_items")
-    reviews = read_table_rest("reviews")
-    mkt = read_table_rest("marketing_spend")
+    users = read_table("users")
+    warehouses = read_table("warehouses")
+    products = read_table("products")
+    orders = read_table("orders")
+    order_items = read_table("order_items")
+    reviews = read_table("reviews")
+    mkt = read_table("marketing_spend")
     return users, warehouses, products, orders, order_items, reviews, mkt
 
 users, warehouses, products, orders, order_items, reviews, mkt = load_all()
